@@ -1,6 +1,38 @@
 {
-  "name": "Recordatorio a clientes",
+  "name": "Recordatorio a clientes - Multi-Despacho (Meta API + Excel)",
   "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1400,
+        100
+      ],
+      "id": "fbfd14bd-248e-45ef-ba83-edc8a176739f",
+      "name": "Schedule Trigger Diario (8:00 AM)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =========================================================================\n// CONFIGURACIÓN GLOBAL DEL DESPACHO CONTABLE (MODULAR Y MULTI-CLIENTE)\n// =========================================================================\n// Cualquier despacho puede personalizar estos valores aquí o vincularlos a\n// la pestaña 'Configuracion' de su archivo Excel / Google Sheets.\n\nreturn [{\n  json: {\n    // Identidad del Despacho\n    nombre_despacho: \"GOPA Asesores Fiscales\",\n    telefono_soporte: \"+52 664 123 4567\",\n    correo_contador: \"contacto@gopa.mx\",\n    \n    // Configuración de Recordatorios (días previos al vencimiento)\n    dias_recordatorio: [7, 3, 1, 0],\n    \n    // Canales Activos (true / false)\n    activar_correo: true,\n    activar_whatsapp: true,\n    \n    // Credenciales para WhatsApp Oficial (Meta Cloud API)\n    // Se completan al obtener el Phone Number ID y Access Token de Meta\n    meta_phone_number_id: \"TU_PHONE_NUMBER_ID\",\n    meta_access_token: \"TU_ACCESS_TOKEN\",\n    \n    // Zona Horaria para Cálculos\n    timezone: \"America/Mexico_City\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1160,
+        100
+      ],
+      "id": "node-config-despacho",
+      "name": "Configuración del Despacho"
+    },
     {
       "parameters": {
         "documentId": {
@@ -12,7 +44,7 @@
           "__rl": true,
           "value": "gid=0",
           "mode": "list",
-          "cachedResultName": "Hoja 1",
+          "cachedResultName": "Obligaciones_Clientes",
           "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Qnw4mgx3aWAl0lMhnWAvjX55S2DRTxlm2Aahu0tx3hY/edit#gid=0"
         },
         "options": {}
@@ -20,11 +52,11 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        -1168,
-        128
+        -920,
+        100
       ],
       "id": "b1d664d8-181e-4ad5-8116-605233d3ee72",
-      "name": "Leer clientes de Sheets",
+      "name": "Leer Obligaciones (Sheets / Excel)",
       "credentials": {
         "googleSheetsOAuth2Api": {
           "id": "5ZwBzIocQU8Xj6oh",
@@ -34,16 +66,16 @@
     },
     {
       "parameters": {
-        "jsCode": "const hoy = new Date();\nhoy.setHours(0, 0, 0, 0);\nconst hoyStr = hoy.toISOString().split('T')[0];\n\nreturn items.map(item => {\n  const fechaStr = item.json.fecha_vencimiento;\n  const fechaVenc = new Date(fechaStr);\n  fechaVenc.setHours(0, 0, 0, 0);\n\n  const diffMs = fechaVenc - hoy;\n  const diasRestantes = Math.round(diffMs / (1000 * 60 * 60 * 24));\n\n  return {\n    json: {\n      ...item.json,\n      dias_restantes: Number(diasRestantes),\n      hoy_str: hoyStr\n    }\n  };\n});"
+        "jsCode": "// =========================================================================\n// MOTOR DE VALIDACIÓN DE FECHAS Y TELÉFONOS\n// Soporta: YYYY-MM-DD, DD/MM/YYYY, fechas ISO y seriales de Excel\n// Sanitiza teléfonos al estándar internacional E.164 para WhatsApp\n// =========================================================================\n\nconst config = $('Configuración del Despacho').first().json;\nconst diasValidos = config.dias_recordatorio || [7, 3, 1, 0];\n\nconst hoy = new Date();\nhoy.setHours(0, 0, 0, 0);\nconst hoyStr = hoy.toISOString().split('T')[0];\n\nfunction parsearFecha(val) {\n  if (!val) return null;\n  if (val instanceof Date) {\n    val.setHours(0,0,0,0);\n    return val;\n  }\n  if (typeof val === 'number') {\n    // Número serial de Excel (días transcurridos desde 1899-12-30)\n    const fecha = new Date(Math.round((val - 25569) * 86400 * 1000));\n    fecha.setHours(0,0,0,0);\n    return fecha;\n  }\n  if (typeof val === 'string') {\n    const s = val.trim();\n    // Formato DD/MM/YYYY o DD-MM-YYYY\n    const dmy = s.match(/^(\\d{1,2})[\\/\\-](\\d{1,2})[\\/\\-](\\d{4})$/);\n    if (dmy) {\n      return new Date(parseInt(dmy[3]), parseInt(dmy[2]) - 1, parseInt(dmy[1]));\n    }\n    // Formato YYYY-MM-DD\n    const ymd = s.match(/^(\\d{4})[\\/\\-](\\d{1,2})[\\/\\-](\\d{1,2})$/);\n    if (ymd) {\n      return new Date(parseInt(ymd[1]), parseInt(ymd[2]) - 1, parseInt(ymd[3]));\n    }\n    const parsed = new Date(s);\n    if (!isNaN(parsed.getTime())) {\n      parsed.setHours(0,0,0,0);\n      return parsed;\n    }\n  }\n  return null;\n}\n\nfunction sanitizarTelefono(tel) {\n  if (!tel) return '';\n  let clean = String(tel).replace(/\\D/g, ''); // Deja solo dígitos\n  // Si tiene 10 dígitos (formato nacional MX), antepone código 52\n  if (clean.length === 10) {\n    clean = '52' + clean;\n  }\n  // Si viene con 521 (13 dígitos móvil tradicional MX), estandariza a 52 + 10 dígitos\n  if (clean.length === 13 && clean.startsWith('521')) {\n    clean = '52' + clean.substring(3);\n  }\n  return clean;\n}\n\nconst resultado = [];\n\nfor (const item of items) {\n  const row = item.json;\n  const fechaStr = row.Fecha_Vencimiento || row.fecha_vencimiento;\n  const fechaObj = parsearFecha(fechaStr);\n  \n  if (!fechaObj) {\n    continue; // Si la fecha está vacía o inválida, se omite\n  }\n  \n  const diffMs = fechaObj.getTime() - hoy.getTime();\n  const diasRestantes = Math.round(diffMs / (1000 * 60 * 60 * 24));\n  const esDiaEnvio = diasValidos.includes(diasRestantes);\n  \n  const rawTel = row.Telefono_WhatsApp || row.telefono || '';\n  const telLimpio = sanitizarTelefono(rawTel);\n  \n  resultado.push({\n    json: {\n      ...row,\n      cliente_nombre: row.Cliente_Nombre || row.cliente_nombre || 'Estimado Cliente',\n      cliente_email: row.Cliente_Email || row.cliente_email || '',\n      telefono_wa: telLimpio,\n      obligacion: row.Obligacion || row.obligacion || 'Obligación Fiscal',\n      periodo: row.Periodo || row.periodo || 'Mes en curso',\n      fecha_vencimiento: fechaStr,\n      dias_restantes: diasRestantes,\n      es_dia_envio: esDiaEnvio,\n      hoy_str: hoyStr,\n      ultima_fecha_envio: row.Ultima_Fecha_Envio || row.ultima_fecha_envio || ''\n    }\n  });\n}\n\nreturn resultado;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -960,
-        128
+        -680,
+        100
       ],
       "id": "f26dee99-4d3f-4a01-9f5a-b0467bf5ca50",
-      "name": "Calcular días restantes"
+      "name": "Procesar Fechas y Sanitizar Teléfono"
     },
     {
       "parameters": {
@@ -56,81 +88,53 @@
           },
           "conditions": [
             {
-              "id": "cond-7",
-              "leftValue": "={{ $json.dias_restantes }}",
-              "rightValue": 7,
+              "id": "cond-es-dia",
+              "leftValue": "={{ $json.es_dia_envio }}",
+              "rightValue": true,
               "operator": {
-                "type": "number",
-                "operation": "equals"
-              }
-            },
-            {
-              "id": "cond-3",
-              "leftValue": "={{ $json.dias_restantes }}",
-              "rightValue": 3,
-              "operator": {
-                "type": "number",
-                "operation": "equals"
-              }
-            },
-            {
-              "id": "cond-1",
-              "leftValue": "={{ $json.dias_restantes }}",
-              "rightValue": 1,
-              "operator": {
-                "type": "number",
-                "operation": "equals"
-              }
-            },
-            {
-              "id": "cond-0",
-              "leftValue": "={{ $json.dias_restantes }}",
-              "rightValue": 0,
-              "operator": {
-                "type": "number",
+                "type": "boolean",
                 "operation": "equals"
               }
             }
           ],
-          "combinator": "or"
+          "combinator": "and"
         },
-        "looseTypeValidation": true,
         "options": {}
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        -752,
-        128
+        -440,
+        100
       ],
       "id": "46d926cb-c8b0-48b5-bdf0-f4caf507d6c4",
-      "name": "¿Es día de recordatorio?"
+      "name": "¿Toca Recordatorio Hoy?"
     },
     {
       "parameters": {
-        "jsCode": "// Protección antiduplicados:\n// Si ya se envió un recordatorio HOY para esta obligación, se descarta\nreturn items.filter(item => {\n  const ultima = item.json.ultima_fecha_envio || '';\n  const hoy = item.json.hoy_str;\n  return ultima !== hoy;\n});"
+        "jsCode": "// =========================================================================\n// FILTRO ANTIDUPLICADOS\n// Si ya se envió una notificación HOY para esta obligación específica,\n// se descarta para evitar enviar recordatorios repetidos al cliente.\n// =========================================================================\n\nreturn items.filter(item => {\n  const ultima = item.json.ultima_fecha_envio || '';\n  const hoy = item.json.hoy_str;\n  return ultima !== hoy;\n});"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -544,
-        128
+        -200,
+        100
       ],
       "id": "b95366e4-ea70-4f37-97aa-957a8974e1d8",
-      "name": "Filtro antiduplicados"
+      "name": "Filtro Antiduplicados"
     },
     {
       "parameters": {
-        "jsCode": "return items.map(item => {\n  const dias = item.json.dias_restantes;\n  const nombre = item.json.cliente_nombre;\n  const obligacion = item.json.obligacion;\n  const periodo = item.json.periodo;\n  const fecha = item.json.fecha_vencimiento;\n\n  let asunto, emailMsg, waMsg;\n\n  if (dias === 7) {\n    asunto = `Recordatorio: ${obligacion} vence en 7 días`;\n    emailMsg = `Estimado equipo de ${nombre},\\n\\nLe recordamos que su obligación fiscal vence en 7 días.\\n\\nObligación: ${obligacion}\\nPeríodo: ${periodo}\\nFecha límite: ${fecha}\\n\\nEste es un recordatorio preventivo para reunir la documentación con tiempo.\\n\\nQuedamos a sus órdenes.`;\n    waMsg = `📅 *Recordatorio fiscal — 7 días*\\n\\nHola equipo de *${nombre}*,\\n\\nLes recordamos que la siguiente obligación vence en 7 días:\\n\\n• *Obligación:* ${obligacion}\\n• *Período:* ${periodo}\\n• *Fecha límite:* ${fecha}\\n\\nTiempo suficiente para preparar la documentación con calma. 💼\\n\\n_Despacho Contable_`;\n\n  } else if (dias === 3) {\n    asunto = `⚠️ Urgente: ${obligacion} vence en 3 días`;\n    emailMsg = `Estimado equipo de ${nombre},\\n\\nLe recordamos que su obligación fiscal vence en 3 días.\\n\\nObligación: ${obligacion}\\nPeríodo: ${periodo}\\nFecha límite: ${fecha}\\n\\nPor favor asegúrese de contar con toda la información necesaria.\\n\\nQuedamos a sus órdenes.`;\n    waMsg = `⚠️ *URGENTE — 3 días para vencimiento*\\n\\nHola equipo de *${nombre}*,\\n\\n• *Obligación:* ${obligacion}\\n• *Período:* ${periodo}\\n• *Fecha límite:* ${fecha}\\n\\nPor favor confirmen que ya tienen lista la documentación para poder presentar a tiempo. 🙏\\n\\n_Despacho Contable_`;\n\n  } else if (dias === 1) {\n    asunto = `🔔 Mañana vence: ${obligacion}`;\n    emailMsg = `Estimado equipo de ${nombre},\\n\\nMañana vence la siguiente obligación fiscal.\\n\\nObligación: ${obligacion}\\nPeríodo: ${periodo}\\nFecha límite: ${fecha}\\n\\nSi aún no han enviado la documentación, es necesario hacerlo hoy.\\n\\nQuedamos a sus órdenes.`;\n    waMsg = `🔔 *¡Vence MAÑANA!*\\n\\nHola equipo de *${nombre}*,\\n\\n• *Obligación:* ${obligacion}\\n• *Período:* ${periodo}\\n• *Fecha límite:* ${fecha}\\n\\nSi falta documentación, envíenla hoy a más tardar para presentar sin recargos. 🚨\\n\\n_Despacho Contable_`;\n\n  } else if (dias === 0) {\n    asunto = `🔴 HOY VENCE: ${obligacion}`;\n    emailMsg = `Estimado equipo de ${nombre},\\n\\nHOY VENCE la siguiente obligación fiscal.\\n\\nObligación: ${obligacion}\\nPeríodo: ${periodo}\\nFecha límite: ${fecha}\\n\\nSi aún no ha presentado esta declaración, le recomendamos hacerlo hoy para evitar recargos.\\n\\nQuedamos a sus órdenes.`;\n    waMsg = `🔴 *HOY VENCE — Acción inmediata*\\n\\nHola equipo de *${nombre}*,\\n\\n*HOY* es el último día para presentar:\\n\\n• *Obligación:* ${obligacion}\\n• *Período:* ${periodo}\\n\\nPresentar hoy evita recargos del SAT. Contáctenos si necesitan apoyo. 📞\\n\\n_Despacho Contable_`;\n  }\n\n  return {\n    json: {\n      ...item.json,\n      email_asunto: asunto,\n      email_mensaje: emailMsg,\n      wa_mensaje: waMsg\n    }\n  };\n});"
+        "jsCode": "// =========================================================================\n// GENERADOR DE MENSAJES DINÁMICOS\n// Inyecta dinámicamente la marca del despacho, soporte y tono según urgencia\n// =========================================================================\n\nconst config = $('Configuración del Despacho').first().json;\nconst nombreDespacho = config.nombre_despacho || 'Despacho Fiscal';\nconst telSoporte = config.telefono_soporte || '';\n\nreturn items.map(item => {\n  const c = item.json;\n  const dias = c.dias_restantes;\n  const nombre = c.cliente_nombre;\n  const obligacion = c.obligacion;\n  const periodo = c.periodo;\n  const fecha = c.fecha_vencimiento;\n\n  let asunto = '';\n  let emailMsg = '';\n  let waMsg = '';\n\n  if (dias === 7) {\n    asunto = `📅 Recordatorio: ${obligacion} vence en 7 días — ${nombreDespacho}`;\n    emailMsg = `Estimado equipo de ${nombre},\\n\\nLe recordamos que su obligación fiscal vence en 7 días hábiles.\\n\\n• Obligación: ${obligacion}\\n• Período: ${periodo}\\n• Fecha límite: ${fecha}\\n\\nEste es un aviso preventivo para reunir documentación con tiempo.\\n\\nAtentamente,\\n${nombreDespacho}\\nContacto: ${telSoporte}`;\n    waMsg = `📅 *Recordatorio fiscal — 7 días*\\n\\nHola equipo de *${nombre}*,\\n\\nLes recordamos que la siguiente obligación vence en 7 días:\\n\\n• *Obligación:* ${obligacion}\\n• *Período:* ${periodo}\\n• *Fecha límite:* ${fecha}\\n\\nTiempo suficiente para preparar la documentación con calma. 💼\\n\\n_${nombreDespacho}_${telSoporte ? '\\n📞 Dudas: ' + telSoporte : ''}`;\n\n  } else if (dias === 3) {\n    asunto = `⚠️ Urgente: ${obligacion} vence en 3 días — ${nombreDespacho}`;\n    emailMsg = `Estimado equipo de ${nombre},\\n\\nSu obligación fiscal vence en 3 días.\\n\\n• Obligación: ${obligacion}\\n• Período: ${periodo}\\n• Fecha límite: ${fecha}\\n\\nPor favor asegúrese de contar con toda la información y comprobantes para presentar en tiempo.\\n\\nAtentamente,\\n${nombreDespacho}\\nContacto: ${telSoporte}`;\n    waMsg = `⚠️ *URGENTE — 3 días para vencimiento*\\n\\nHola equipo de *${nombre}*,\\n\\n• *Obligación:* ${obligacion}\\n• *Período:* ${periodo}\\n• *Fecha límite:* ${fecha}\\n\\nPor favor confirmen que ya tienen lista la documentación para evitar recargos. 🙏\\n\\n_${nombreDespacho}_${telSoporte ? '\\n📞 Soporte: ' + telSoporte : ''}`;\n\n  } else if (dias === 1) {\n    asunto = `🔔 Mañana vence: ${obligacion} — ${nombreDespacho}`;\n    emailMsg = `Estimado equipo de ${nombre},\\n\\nMañana es el vencimiento legal de la siguiente obligación fiscal:\\n\\n• Obligación: ${obligacion}\\n• Período: ${periodo}\\n• Fecha límite: ${fecha}\\n\\nSi aún falta documentación o aclaraciones, solicitamos enviarlas a la brevedad.\\n\\nAtentamente,\\n${nombreDespacho}\\nContacto: ${telSoporte}`;\n    waMsg = `🔔 *¡Vence MAÑANA!*\\n\\nHola equipo de *${nombre}*,\\n\\n• *Obligación:* ${obligacion}\\n• *Período:* ${periodo}\\n• *Fecha límite:* ${fecha}\\n\\nSi falta enviar comprobantes, favor de enviarlos hoy a más tardar. 🚨\\n\\n_${nombreDespacho}_${telSoporte ? '\\n📞 Soporte: ' + telSoporte : ''}`;\n\n  } else if (dias === 0) {\n    asunto = `🔴 HOY VENCE: ${obligacion} — ${nombreDespacho}`;\n    emailMsg = `Estimado equipo de ${nombre},\\n\\nHOY ES EL ÚLTIMO DÍA para presentar la siguiente obligación fiscal:\\n\\n• Obligación: ${obligacion}\\n• Período: ${periodo}\\n• Fecha límite: ${fecha}\\n\\nPresentar hoy evita multas y recargos ante la autoridad fiscal.\\n\\nAtentamente,\\n${nombreDespacho}\\nContacto: ${telSoporte}`;\n    waMsg = `🔴 *HOY VENCE — Acción Inmediata*\\n\\nHola equipo de *${nombre}*,\\n\\n*HOY* es el último día legal para presentar:\\n\\n• *Obligación:* ${obligacion}\\n• *Período:* ${periodo}\\n\\nPresentar hoy evita recargos y sanciones. Contáctenos de inmediato si necesita asistencia. 📞\\n\\n_${nombreDespacho}_${telSoporte ? '\\n📞 Teléfono: ' + telSoporte : ''}`;\n\n  } else {\n    asunto = `Aviso fiscal: ${obligacion} vence en ${dias} días — ${nombreDespacho}`;\n    emailMsg = `Aviso de vencimiento para ${nombre}: ${obligacion} (${periodo}) vence el ${fecha}.\\n\\n${nombreDespacho}`;\n    waMsg = `Aviso fiscal: ${obligacion} vence en ${dias} días (${fecha}).\\n\\n_${nombreDespacho}_`;\n  }\n\n  return {\n    json: {\n      ...c,\n      email_asunto: asunto,\n      email_mensaje: emailMsg,\n      wa_mensaje: waMsg,\n      estatus_correo: 'Pendiente',\n      estatus_wa: 'Pendiente'\n    }\n  };\n});"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -336,
-        128
+        40,
+        100
       ],
       "id": "ba941e9a-eb02-4af1-86ff-1bfb73a01c39",
-      "name": "Generar mensajes (Email + WhatsApp)"
+      "name": "Generar Mensajes Personalizados"
     },
     {
       "parameters": {
@@ -142,12 +146,12 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        -16,
-        -112
+        280,
+        100
       ],
       "id": "c0d8f3d1-d160-4e71-8bff-33ce0978de5b",
       "name": "Enviar Gmail",
-      "webhookId": "9b85ad3e-e717-4623-b0d1-10859320cf50",
+      "onError": "continueRegularOutput",
       "credentials": {
         "gmailOAuth2": {
           "id": "PGkqFYb8n9nlfCkh",
@@ -158,15 +162,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://evolution-api-production-ac194.up.railway.app/message/sendText/despacho",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "url": "=https://graph.facebook.com/v20.0/{{ $('Configuración del Despacho').first().json.meta_phone_number_id }}/messages",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "apikey",
-              "value": "=L3dz3pp3l1n"
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Configuración del Despacho').first().json.meta_access_token }}"
             },
             {
               "name": "Content-Type",
@@ -175,34 +177,32 @@
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "number",
-              "value": "={{ String($json.telefono) }}"
-            },
-            {
-              "name": "text",
-              "value": "={{ $json.wa_mensaje }}"
-            }
-          ]
-        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"{{ $json.telefono_wa }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"preview_url\": false,\n    \"body\": {{ JSON.stringify($json.wa_mensaje) }}\n  }\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -16,
-        128
+        520,
+        100
       ],
-      "id": "ffcf5b08-a2af-4ebf-8df4-a8f976498d34",
-      "name": "Enviar WhatsApp (Evolution API)",
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "S9GTeh6eDS5mUXpn",
-          "name": "Header Auth account"
-        }
-      }
+      "id": "node-meta-whatsapp",
+      "name": "Enviar WhatsApp (Meta Cloud API)",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =========================================================================\n// PREPARACIÓN DE RESULTADOS PARA ACTUALIZACIÓN EN SHEETS / EXCEL\n// Genera resumen claro del estatus de cada canal enviado\n// =========================================================================\n\nreturn items.map((item, index) => {\n  const prev = $('Generar Mensajes Personalizados').all()[index].json;\n  \n  // Evaluamos si el nodo de WhatsApp tuvo error o éxito\n  const waResponse = item.json;\n  let waStatus = 'Enviado';\n  if (waResponse.error || waResponse.message) {\n    waStatus = 'Pendiente / Configurar Meta API';\n  }\n\n  const resumenEnvio = `Correo: Enviado | WhatsApp: ${waStatus}`;\n  const recordatorioTxt = prev.dias_restantes === 0 ? 'Hoy' : `${prev.dias_restantes} días`;\n\n  return {\n    json: {\n      ...prev,\n      ultima_fecha_envio: prev.hoy_str,\n      estatus_envio: resumenEnvio,\n      recordatorio_enviado: recordatorioTxt\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        100
+      ],
+      "id": "node-prep-update",
+      "name": "Preparar Actualización"
     },
     {
       "parameters": {
@@ -216,138 +216,57 @@
           "__rl": true,
           "value": "gid=0",
           "mode": "list",
-          "cachedResultName": "Hoja 1"
+          "cachedResultName": "Obligaciones_Clientes"
         },
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
             "estado": "Enviado",
-            "recordatorio_enviado": "={{ $('Calcular días restantes').item.json.dias_restantes === 0 ? 'Hoy' : $('Calcular días restantes').item.json.dias_restantes + ' días' }}",
-            "ultima_fecha_envio": "={{ $('Calcular días restantes').item.json.hoy_str }}",
-            "cliente_email": "={{ $('Calcular días restantes').item.json.cliente_email }}",
-            "row_number": 0
+            "recordatorio_enviado": "={{ $json.recordatorio_enviado }}",
+            "ultima_fecha_envio": "={{ $json.ultima_fecha_envio }}",
+            "estatus_envio": "={{ $json.estatus_envio }}",
+            "cliente_email": "={{ $json.cliente_email }}",
+            "obligacion": "={{ $json.obligacion }}"
           },
           "matchingColumns": [
-            "cliente_email"
-          ],
-          "schema": [
-            {
-              "id": "cliente_nombre",
-              "displayName": "cliente_nombre",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": true
-            },
-            {
-              "id": "cliente_email",
-              "displayName": "cliente_email",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "telefono",
-              "displayName": "telefono",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": true
-            },
-            {
-              "id": "obligacion",
-              "displayName": "obligacion",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": true
-            },
-            {
-              "id": "fecha_vencimiento",
-              "displayName": "fecha_vencimiento",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": true
-            },
-            {
-              "id": "periodo",
-              "displayName": "periodo",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": true
-            },
-            {
-              "id": "estado",
-              "displayName": "estado",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "recordatorio_enviado",
-              "displayName": "recordatorio_enviado",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "ultima_fecha_envio",
-              "displayName": "ultima_fecha_envio",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "row_number",
-              "displayName": "row_number",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "number",
-              "canBeUsedToMatch": true,
-              "readOnly": true,
-              "removed": false
-            }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
+            "cliente_email",
+            "obligacion"
+          ]
         },
         "options": {}
       },
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        288,
-        128
+        1000,
+        100
       ],
       "id": "8fe7550b-d80a-4579-ab40-ace5ec0d61b0",
-      "name": "Actualizar estado en Sheets",
+      "name": "Actualizar Estado (Sheets / Excel)",
       "credentials": {
         "googleSheetsOAuth2Api": {
           "id": "5ZwBzIocQU8Xj6oh",
           "name": "Google Sheets account"
         }
       }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "toRecipients": "={{ $json.cliente_email }}",
+        "subject": "={{ $json.email_asunto }}",
+        "bodyContent": "={{ $json.email_mensaje }}",
+        "bodyType": "text"
+      },
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        280,
+        260
+      ],
+      "id": "node-outlook-365",
+      "name": "Enviar Outlook 365 (Alternativa Microsoft)",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -366,8 +285,8 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
       "position": [
-        -1376,
-        368
+        -1400,
+        420
       ],
       "id": "532a1c96-d19b-4967-8796-63e42687bae3",
       "name": "Trigger semanal (lunes 9am)"
@@ -383,7 +302,7 @@
           "__rl": true,
           "value": "gid=0",
           "mode": "list",
-          "cachedResultName": "Hoja 1",
+          "cachedResultName": "Obligaciones_Clientes",
           "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Qnw4mgx3aWAl0lMhnWAvjX55S2DRTxlm2Aahu0tx3hY/edit#gid=0"
         },
         "options": {}
@@ -391,8 +310,8 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        -1168,
-        368
+        -1160,
+        420
       ],
       "id": "f23c22a3-4a4a-42a6-b1fb-7ea718409fce",
       "name": "Leer todos los clientes (semanal)",
@@ -405,116 +324,112 @@
     },
     {
       "parameters": {
-        "jsCode": "// Agrupa toda la lista para generar el reporte semanal del contador\nconst hoy = new Date();\nhoy.setHours(0, 0, 0, 0);\n\nconst urgentes = [];\nconst proximos = [];\nconst pendientes = [];\n\nfor (const item of items) {\n  const fechaVenc = new Date(item.json.fecha_vencimiento);\n  fechaVenc.setHours(0, 0, 0, 0);\n  const dias = Math.round((fechaVenc - hoy) / (1000 * 60 * 60 * 24));\n\n  if (dias < 0) {\n    pendientes.push({ ...item.json, dias });\n  } else if (dias <= 3) {\n    urgentes.push({ ...item.json, dias });\n  } else if (dias <= 10) {\n    proximos.push({ ...item.json, dias });\n  }\n}\n\nconst lineasUrgentes = urgentes.map(c =>\n  `  • ${c.cliente_nombre} — ${c.obligacion} — ${c.dias === 0 ? 'HOY' : `${c.dias} día(s)`}`\n).join('\\n') || '  (ninguno)';\n\nconst lineasProximos = proximos.map(c =>\n  `  • ${c.cliente_nombre} — ${c.obligacion} — ${c.dias} día(s)`\n).join('\\n') || '  (ninguno)';\n\nconst lineasVencidos = pendientes.map(c =>\n  `  • ${c.cliente_nombre} — ${c.obligacion} — vencido hace ${Math.abs(c.dias)} día(s)`\n).join('\\n') || '  (ninguno)';\n\nconst fechaStr = hoy.toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\n\nconst reporte = `REPORTE SEMANAL DE OBLIGACIONES FISCALES\n${fechaStr}\n${'='.repeat(45)}\n\n🔴 URGENTES (0–3 días):\n${lineasUrgentes}\n\n📅 PRÓXIMOS (4–10 días):\n${lineasProximos}\n\n⚠️ POSIBLES VENCIDOS (revisar):\n${lineasVencidos}\n\nTotal clientes monitoreados: ${items.length}\nGenerado automáticamente por tu sistema de recordatorios.`;\n\nreturn [{ json: { reporte, total: items.length, urgentes: urgentes.length, proximos: proximos.length } }];"
+        "jsCode": "// =========================================================================\n// GENERACIÓN DE REPORTE SEMANAL EJECUTIVO PARA EL CONTADOR\n// Agrupa urgentes, próximos y vencidos calculados en tiempo real\n// =========================================================================\n\nconst config = $('Configuración del Despacho').first()?.json || {\n  nombre_despacho: 'Despacho Fiscal',\n  correo_contador: 'contacto@gopa.mx'\n};\n\nconst hoy = new Date();\nhoy.setHours(0, 0, 0, 0);\n\nconst urgentes = [];\nconst proximos = [];\nconst vencidos = [];\n\nfor (const item of items) {\n  const c = item.json;\n  const fStr = c.Fecha_Vencimiento || c.fecha_vencimiento;\n  if (!fStr) continue;\n  \n  const fObj = new Date(fStr);\n  fObj.setHours(0, 0, 0, 0);\n  if (isNaN(fObj.getTime())) continue;\n\n  const dias = Math.round((fObj - hoy) / (1000 * 60 * 60 * 24));\n  const nombre = c.Cliente_Nombre || c.cliente_nombre || 'Cliente';\n  const ob = c.Obligacion || c.obligacion || 'Obligación';\n\n  if (dias < 0) {\n    vencidos.push({ nombre, ob, dias });\n  } else if (dias <= 3) {\n    urgentes.push({ nombre, ob, dias });\n  } else if (dias <= 10) {\n    proximos.push({ nombre, ob, dias });\n  }\n}\n\nconst lineasUrgentes = urgentes.map(c =>\n  `  • ${c.nombre} — ${c.ob} — ${c.dias === 0 ? 'HOY' : `${c.dias} día(s)`}`\n).join('\\n') || '  (ninguno)';\n\nconst lineasProximos = proximos.map(c =>\n  `  • ${c.nombre} — ${c.ob} — ${c.dias} día(s)`\n).join('\\n') || '  (ninguno)';\n\nconst lineasVencidos = vencidos.map(c =>\n  `  • ${c.nombre} — ${c.ob} — vencido hace ${Math.abs(c.dias)} día(s)`\n).join('\\n') || '  (ninguno)';\n\nconst fechaStr = hoy.toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\n\nconst reporte = `REPORTE SEMANAL DE OBLIGACIONES FISCALES — ${config.nombre_despacho}\n${fechaStr}\n${'='.repeat(50)}\n\n🔴 URGENTES (0–3 días para vencimiento):\n${lineasUrgentes}\n\n📅 PRÓXIMOS (4–10 días):\n${lineasProximos}\n\n⚠️ OBLIGACIONES VENCIDAS (requiere atención):\n${lineasVencidos}\n\nTotal obligaciones monitoreadas: ${items.length}\nReporte generado automáticamente por tu sistema de recordatorios fiscales.`;\n\nreturn [{\n  json: {\n    reporte,\n    destinatario: config.correo_contador,\n    total: items.length,\n    urgentes: urgentes.length,\n    proximos: proximos.length,\n    vencidos: vencidos.length\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -960,
-        368
+        -920,
+        420
       ],
       "id": "5c98ecb3-2af3-42c5-bfb1-7a404eb308b8",
       "name": "Generar reporte semanal"
     },
     {
       "parameters": {
-        "sendTo": "ponchogopa68@gmail.com",
-        "subject": "📊 Reporte semanal de obligaciones fiscales",
+        "sendTo": "={{ $json.destinatario }}",
+        "subject": "=📊 Reporte semanal de obligaciones fiscales — {{ $('Configuración del Despacho').first().json.nombre_despacho }}",
         "message": "={{ $json.reporte }}",
         "options": {}
       },
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        -752,
-        368
+        -680,
+        420
       ],
       "id": "d188e24a-76b2-46e5-9160-51929334ca88",
       "name": "Enviar reporte al contador",
-      "webhookId": "d3f8daf1-82b7-42c7-a5ec-f3c90ef384cd",
       "credentials": {
         "gmailOAuth2": {
           "id": "PGkqFYb8n9nlfCkh",
           "name": "Gmail account"
         }
       }
-    },
-    {
-      "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "triggerAtHour": 8
-            }
-          ]
-        }
-      },
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.3,
-      "position": [
-        -1376,
-        128
-      ],
-      "id": "fbfd14bd-248e-45ef-ba83-edc8a176739f",
-      "name": "Schedule Trigger1"
     }
   ],
-  "pinData": {},
   "connections": {
-    "Leer clientes de Sheets": {
+    "Schedule Trigger Diario (8:00 AM)": {
       "main": [
         [
           {
-            "node": "Calcular días restantes",
+            "node": "Configuración del Despacho",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Calcular días restantes": {
+    "Configuración del Despacho": {
       "main": [
         [
           {
-            "node": "¿Es día de recordatorio?",
+            "node": "Leer Obligaciones (Sheets / Excel)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "¿Es día de recordatorio?": {
+    "Leer Obligaciones (Sheets / Excel)": {
       "main": [
         [
           {
-            "node": "Filtro antiduplicados",
+            "node": "Procesar Fechas y Sanitizar Teléfono",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Filtro antiduplicados": {
+    "Procesar Fechas y Sanitizar Teléfono": {
       "main": [
         [
           {
-            "node": "Generar mensajes (Email + WhatsApp)",
+            "node": "¿Toca Recordatorio Hoy?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Generar mensajes (Email + WhatsApp)": {
+    "¿Toca Recordatorio Hoy?": {
+      "main": [
+        [
+          {
+            "node": "Filtro Antiduplicados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtro Antiduplicados": {
+      "main": [
+        [
+          {
+            "node": "Generar Mensajes Personalizados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generar Mensajes Personalizados": {
       "main": [
         [
           {
             "node": "Enviar Gmail",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Enviar WhatsApp (Evolution API)",
             "type": "main",
             "index": 0
           }
@@ -525,18 +440,29 @@
       "main": [
         [
           {
-            "node": "Actualizar estado en Sheets",
+            "node": "Enviar WhatsApp (Meta Cloud API)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Enviar WhatsApp (Evolution API)": {
+    "Enviar WhatsApp (Meta Cloud API)": {
       "main": [
         [
           {
-            "node": "Actualizar estado en Sheets",
+            "node": "Preparar Actualización",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Actualización": {
+      "main": [
+        [
+          {
+            "node": "Actualizar Estado (Sheets / Excel)",
             "type": "main",
             "index": 0
           }
@@ -575,17 +501,6 @@
           }
         ]
       ]
-    },
-    "Schedule Trigger1": {
-      "main": [
-        [
-          {
-            "node": "Leer clientes de Sheets",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
     }
   },
   "active": false,
@@ -593,7 +508,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "94cb9ffb-b10b-46b5-9ea8-ebf94ef890f4",
+  "versionId": "b1f8c12a-3024-4f56-9be8-c9182390234a",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "7af6f0c2b5c1a7bacdca615b8c6a5a260a319e0cbb9c5e88ccfa31c4d0a70875"
